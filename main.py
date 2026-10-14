@@ -6,7 +6,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
-from web_operations import serp_search
+from web_operations import reddit_search_api, serp_search
 
 load_dotenv()
 
@@ -35,7 +35,6 @@ def google_search(state: State):
     print(f"Searching Google for: {user_question}")
 
     google_results = serp_search(user_question, engine="google")
-    print(google_results)
 
     return {"google_results": google_results}
 
@@ -45,7 +44,6 @@ def bing_search(state: State):
     print(f"Searching Bing for: {user_question}")
 
     bing_results = serp_search(user_question, engine="bing")
-    print(bing_results)
 
     return {"bing_results": bing_results}
 
@@ -54,7 +52,8 @@ def reddit_search(state: State):
     user_question = state.get("user_question", "")
     print(f"Searching Reddit for: {user_question}")
 
-    reddit_results = []
+    reddit_results = reddit_search_api(user_question)
+    print(reddit_results)
 
     return {"reddit_results": reddit_results}
 
