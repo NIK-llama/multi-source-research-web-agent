@@ -18,6 +18,9 @@ def poll_snapshot_status(
     snapshot_id: str, max_attempts: int = 120, delay: int = 5
 ) -> bool:
     api_key = os.getenv("BRIGHTDATA_API_KEY")
+    if not api_key:
+        raise RuntimeError("BRIGHTDATA_API_KEY is not configured.")
+
     progress_url = f"https://api.brightdata.com/datasets/v3/progress/{snapshot_id}"
     headers = {"Authorization": f"Bearer {api_key}"}
 
@@ -58,6 +61,9 @@ def download_snapshot(
     snapshot_id: str, format: str = "json"
 ) -> list[dict[any, any]] | None:
     api_key = os.getenv("BRIGHTDATA_API_KEY")
+    if not api_key:
+        raise RuntimeError("BRIGHTDATA_API_KEY is not configured.")
+
     download_url = (
         f"https://api.brightdata.com/datasets/v3/snapshot/{snapshot_id}?format={format}"
     )

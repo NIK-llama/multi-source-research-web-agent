@@ -6,7 +6,14 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
-from web_operations import reddit_search_api, serp_search
+from prompts import (
+    get_bing_analysis_messages,
+    get_google_analysis_messages,
+    get_reddit_analysis_messages,
+    get_reddit_url_analysis_messages,
+    get_synthesis_messages,
+)
+from web_operations import reddit_post_retrieval, reddit_search_api, serp_search
 
 load_dotenv()
 
@@ -28,6 +35,12 @@ class State(TypedDict):
     bing_analysis: str | None
     reddit_analysis: str | None
     final_answer: str | None
+
+
+class RedditURLAnalysisInput(BaseModel):
+    selected_urls: list[str] = Field(
+        description="List of Reddit URLs that contain valuable information for answering the user's question"
+    )
 
 
 def google_search(state: State):
@@ -59,27 +72,105 @@ def reddit_search(state: State):
 
 
 def analyze_reddit_posts(state: State):
-    return {"selected_reddit_urls": []}
+    user_question = state.get("user_question", "")
+    reddit_results = state.get("reddit_results", "")
+
+    if not reddit_results:
+        return {"selected_reddit_urls": []}
+
+    structured_llm = llm.with_structured_output(RedditURLAnalysisInput)
+    messages = get_reddit_url_analysis_messages(user_question, reddit_results)
+
+    try:
+        analysis = structured_llm.invoke(messages)
+        selected_urls = analysis.selected_urls
+
+        print("Selected URLs:")
+        for i, url in enumerate(selected_urls, 1):
+            print(f"    {i}. {url}")
+
+    except Exception as e:
+        print(e)
+        selected_urls = []
+
+    return {"selected_reddit_urls": selected_urls}
 
 
 def retrieve_reddit_posts(state: State):
-    return {"reddit_post_data": []}
+    print("Getting reddit post comments")
+
+    selected_urls = state.get("selected_reddit_urls", [])
+
+    if not selected_urls:
+        return {"reddit_post_data": []}
+
+    print(f"Processing {len(selected_urls)} Reddit URLs")
+
+    reddit_post_data = reddit_post_retrieval(selected_urls)
+
+    if reddit_post_data:
+        print("Successfully got {len(reddit_post_data)} posts")
+    else:
+        print("Failed to get post data")
+        reddit_post_data = []
+
+    print(reddit_post_data)
+    return {"reddit_post_data": reddit_post_data}
 
 
 def analyze_google_results(state: State):
-    return {"google_analysis": ""}
+    print("Analyzing Google results")
+
+    user_question = state.get("user_question", "")
+    google_results = state.get("google_results", "")
+
+    messages = get_google_analysis_messages(user_question, google_results)
+    reply = llm.invoke(messages)
+
+    return {"google_analysis": reply.content}
 
 
 def analyze_bing_results(state: State):
-    return {"bing_analysis": ""}
+    print("Analyzing Bing results")
+
+    user_question = state.get("user_question", "")
+    bing_results = state.get("bing_results", "")
+
+    messages = get_bing_analysis_messages(user_question, bing_results)
+    reply = llm.invoke(messages)
+
+    return {"bing_analysis": reply.content}
 
 
 def analyze_reddit_results(state: State):
-    return {"reddit_analysis": ""}
+    print("Analyzing reddit search results")
+
+    user_question = state.get("user_question", "")
+    reddit_results = state.get("reddit_results", "")
+    reddit_post_data = state.get("reddit_post_data", "")
+
+    messages = get_reddit_analysis_messages(user_question, reddit_results, reddit_post_data)
+    reply = llm.invoke(messages)
+
+    return {"reddit_analysis": reply.content}
 
 
 def synthesize_analyses(state: State):
-    return {"final_answer": ""}
+    print("Combine all results together")
+
+    user_question = state.get("user_question", "")
+    google_analysis = state.get("google_analysis", "")
+    bing_analysis = state.get("bing_analysis", "")
+    reddit_analysis = state.get("reddit_analysis", "")
+
+    messages = get_synthesis_messages(
+        user_question, google_analysis, bing_analysis, reddit_analysis
+    )
+
+    reply = llm.invoke(messages)
+    final_answer = reply.content
+
+    return {"final_answer": final_answer, "messages": [{"role": "assistant", "content": final_answer}]}
 
 
 graph_builder = StateGraph(State)
