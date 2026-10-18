@@ -130,8 +130,29 @@ def download_snapshot(
             _safe_print(f"❌ Unexpected snapshot data type: {type(data)}")
             return None
 
-        _safe_print(f"🎉 Successfully downloaded {len(data)} item(s)")
-        return data
+        # Filter out BrightData error records (e.g. {"error": "No results", "error_code": "dead_page"})
+        valid_items = [
+            item for item in data
+            if isinstance(item, dict) and not item.get("error")
+        ]
+        error_items = [
+            item for item in data
+            if isinstance(item, dict) and item.get("error")
+        ]
+
+        if error_items and not valid_items:
+            err_msg = error_items[0].get("error", "No results found")
+            err_code = error_items[0].get("error_code", "")
+            code_str = f" ({err_code})" if err_code else ""
+            _safe_print(f"⚠️  Snapshot completed: BrightData reported '{err_msg}'{code_str}")
+            return []
+
+        if not valid_items:
+            _safe_print("ℹ️  Snapshot data is empty.")
+            return []
+
+        _safe_print(f"🎉 Successfully downloaded {len(valid_items)} item(s)")
+        return valid_items
 
     except (requests.RequestException, ValueError) as exc:
         _safe_print(f"❌ Error downloading snapshot: {exc}")

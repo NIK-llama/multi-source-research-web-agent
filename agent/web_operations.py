@@ -7,6 +7,7 @@ All network calls go through BrightData's proxy/dataset APIs.
 
 import os
 import time
+from typing import Any
 from urllib.parse import quote_plus
 
 import requests
@@ -171,27 +172,46 @@ def serp_search(query: str, engine: str = "google") -> dict | None:
     }
 
 
+def _clean_reddit_query(keyword: str) -> str:
+    """Clean conversational phrasing from user query to optimize for Reddit's search engine."""
+    q = keyword.strip().rstrip("?!.,;")
+    lower = q.lower()
+    starters = [
+        "is ", "are ", "was ", "were ", "can ", "could ", "does ", "do ", "did ",
+        "what is ", "what are ", "why is ", "why are ", "why does ", "why do ",
+        "how to ", "how does ", "how do ", "tell me about ",
+    ]
+    for s in starters:
+        if lower.startswith(s):
+            cleaned = q[len(s):].strip()
+            if cleaned:
+                return cleaned
+    return q or keyword.strip()
+
+
 def reddit_search_api(
     keyword: str,
     date: str = "All time",
-    sort_by: str = "Hot",
-    num_of_posts: int = 20,
+    sort_by: str = "Relevance",
+    num_of_posts: int = 10,
 ) -> dict | None:
     """
-    Search Reddit for posts matching a keyword via BrightData.
+    Search Reddit for posts matching a keyword via BrightData with automatic SERP fallback.
 
     Args:
         keyword:      Search term.
         date:         Date filter (e.g. ``"All time"``, ``"Past week"``).
-        sort_by:      Sort order (e.g. ``"Hot"``, ``"New"``, ``"Top"``).
+        sort_by:      Sort order (e.g. ``"Relevance"``, ``"Top"``, ``"Hot"``).
         num_of_posts: Maximum number of posts to retrieve.
 
     Returns:
-        Dict with ``"parsed_data"`` (list of title/url dicts) and
+        Dict with ``"parsed_data"`` (list of title/url/snippet dicts) and
         ``"total_found"`` (int), or None on error.
     """
     if not keyword or not keyword.strip():
         return None
+
+    cleaned_keyword = _clean_reddit_query(keyword)
 
     params = {
         "dataset_id":    _REDDIT_SEARCH_DATASET_ID,
@@ -201,18 +221,17 @@ def reddit_search_api(
     }
     data = [
         {
-            "keyword":      keyword.strip(),
+            "keyword":      cleaned_keyword,
             "date":         date,
             "sort_by":      sort_by,
             "num_of_posts": num_of_posts,
         }
     ]
 
+    # Poll for up to 30 attempts (2.5 mins) before falling back to fast SERP search
     raw_data = _trigger_and_download_snapshot(
-        _BRIGHTDATA_TRIGGER_URL, params, data, operation_name="reddit search"
+        _BRIGHTDATA_TRIGGER_URL, params, data, operation_name="reddit search", max_attempts=30
     )
-    if not raw_data:
-        return None
 
     parsed_data: list[dict[str, str]] = []
     if isinstance(raw_data, list):
@@ -223,14 +242,39 @@ def reddit_search_api(
                 if url and not url.startswith("http"):
                     url = f"https://www.reddit.com{url}" if url.startswith("/") else f"https://www.reddit.com/{url}"
                 if url:
-                    parsed_data.append({"title": title or "Untitled", "url": url})
+                    parsed_data.append({
+                        "title": title or "Untitled",
+                        "url": url,
+                        "snippet": (post.get("description") or "").strip(),
+                    })
+
+    # Robust Fallback: If direct dataset returns 0 posts (e.g. dead_page / no results on Reddit search),
+    # query Google SERP for 'site:reddit.com <query>' which returns in 2 seconds.
+    if not parsed_data:
+        _safe_print("ℹ️  Direct Reddit scraper found 0 posts. Checking Google SERP for Reddit discussions…")
+        serp_query = f"site:reddit.com {keyword.strip()}"
+        serp_res = serp_search(serp_query, engine="google")
+        if not serp_res or not serp_res.get("organic"):
+            serp_res = serp_search(serp_query, engine="bing")
+
+        if serp_res and isinstance(serp_res, dict) and serp_res.get("organic"):
+            for item in serp_res.get("organic", []):
+                link = item.get("link", "")
+                if "reddit.com" in link:
+                    parsed_data.append({
+                        "title": item.get("title", "Untitled"),
+                        "url": link,
+                        "snippet": item.get("description") or item.get("snippet", ""),
+                    })
+            if parsed_data:
+                _safe_print(f"✅ Reddit: recovered {len(parsed_data)} discussions via SERP fallback")
 
     return {"parsed_data": parsed_data, "total_found": len(parsed_data)}
 
 
 def reddit_post_retrieval(
     urls: list[str],
-    days_back: int = 10,
+    days_back: int | None = None,
     load_all_replies: bool = False,
     comment_limit: str = "",
 ) -> dict | None:
@@ -239,7 +283,7 @@ def reddit_post_retrieval(
 
     Args:
         urls:             List of Reddit post URLs to fetch.
-        days_back:        How many days of comments to retrieve.
+        days_back:        Optional number of days back to filter comments (default None = all comments).
         load_all_replies: Whether to recursively load all nested replies.
         comment_limit:    Optional cap on the number of comments returned.
 
@@ -267,22 +311,23 @@ def reddit_post_retrieval(
         "dataset_id":     _REDDIT_POSTS_DATASET_ID,
         "include_errors": "true",
     }
-    data = [
-        {
-            "url":              url,
-            "days_back":        days_back,
-            "load_all_replies": load_all_replies,
-            "comment_limit":    comment_limit,
-        }
-        for url in clean_urls
-    ]
+    data = []
+    for url in clean_urls:
+        item: dict[str, Any] = {"url": url}
+        if days_back is not None and days_back > 0:
+            item["days_back"] = days_back
+        if load_all_replies:
+            item["load_all_replies"] = load_all_replies
+        if comment_limit:
+            item["comment_limit"] = comment_limit
+        data.append(item)
 
     raw_data = _trigger_and_download_snapshot(
         _BRIGHTDATA_TRIGGER_URL,
         params,
         data,
         operation_name="reddit comments",
-        max_attempts=30,
+        max_attempts=45,
     )
     if not raw_data:
         return None

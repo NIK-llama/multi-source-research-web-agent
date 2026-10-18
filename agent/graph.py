@@ -132,7 +132,7 @@ def _format_serp_for_prompt(results: dict | str | None) -> str:
 
 
 def _format_reddit_results_for_prompt(reddit_results: dict | str | None) -> str:
-    """Format Reddit search results into clean titles and URLs for prompt."""
+    """Format Reddit search results into clean titles, snippets, and URLs for prompt."""
     if not reddit_results:
         return "No Reddit search results."
     if not isinstance(reddit_results, dict):
@@ -147,8 +147,12 @@ def _format_reddit_results_for_prompt(reddit_results: dict | str | None) -> str:
         if isinstance(item, dict):
             title = item.get("title", "Untitled")
             url = item.get("url", "")
-            lines.append(f"{i}. Title: {title}\n   URL: {url}")
-    return "\n".join(lines) if lines else "No Reddit posts found."
+            snippet = (item.get("snippet") or "").strip()
+            line = f"{i}. Title: {title}\n   URL: {url}"
+            if snippet:
+                line += f"\n   Snippet: {snippet}"
+            lines.append(line)
+    return "\n\n".join(lines) if lines else "No Reddit posts found."
 
 
 def _format_reddit_comments_for_prompt(comments: list | dict | None) -> str:
@@ -229,12 +233,12 @@ def analyze_reddit_posts(state: State) -> dict:
     formatted_reddit = _format_reddit_results_for_prompt(reddit_results)
     messages = get_reddit_url_analysis_messages(user_question, formatted_reddit)
 
+    selected_urls: list[str] = []
     try:
         analysis = structured_llm.invoke(messages)
         raw_urls = getattr(analysis, "selected_urls", []) if analysis else []
 
         # Clean and ensure absolute URLs
-        selected_urls: list[str] = []
         for raw_u in raw_urls:
             if isinstance(raw_u, str) and raw_u.strip():
                 u = raw_u.strip()
@@ -245,16 +249,22 @@ def analyze_reddit_posts(state: State) -> dict:
 
         selected_urls = selected_urls[:3]  # hard cap at 3
 
-        if selected_urls:
-            _safe_print("Selected URLs:")
-            for i, url in enumerate(selected_urls, 1):
-                _safe_print(f"    {i}. {url}")
-        else:
-            _safe_print("ℹ️  No Reddit URLs selected for deep retrieval")
-
     except Exception as exc:
-        _safe_print(f"⚠️  Reddit URL selection failed: {exc}")
-        selected_urls = []
+        _safe_print(f"⚠️  Reddit URL selection error: {exc}")
+
+    # Fallback: if LLM selected 0 URLs, use the top search results so deep retrieval isn't skipped
+    if not selected_urls and reddit_results.get("parsed_data"):
+        for item in reddit_results["parsed_data"][:3]:
+            u = (item.get("url") or "").strip()
+            if u and u not in selected_urls:
+                selected_urls.append(u)
+
+    if selected_urls:
+        _safe_print("Selected URLs:")
+        for i, url in enumerate(selected_urls, 1):
+            _safe_print(f"    {i}. {url}")
+    else:
+        _safe_print("ℹ️  No Reddit URLs selected for deep retrieval")
 
     return {"selected_reddit_urls": selected_urls}
 
